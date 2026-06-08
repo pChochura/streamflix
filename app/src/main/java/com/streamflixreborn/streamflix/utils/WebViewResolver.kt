@@ -46,12 +46,12 @@ class WebViewResolver(private val context: Context) {
         "Just a moment...", "cf-browser-verification", "challenge-running", "Checking your browser", "cloudflare"
     )
 
-    suspend fun get(url: String, headers: Map<String, String> = emptyMap()): String = mutex.withLock {
-        Log.d(TAG, "[WebView] Fetching: $url (IsTV: $isTv)")
+    suspend fun get(url: String, headers: Map<String, String> = emptyMap(), forceVisible: Boolean = false): String = mutex.withLock {
+        Log.d(TAG, "[WebView] Fetching: $url (IsTV: $isTv, ForceVisible: $forceVisible)")
         pollingCount = 0
-        val result = withTimeoutOrNull(120000) {
+        val result = withTimeoutOrNull(if (forceVisible) 300000 else 120000) {
             suspendCancellableCoroutine { continuation ->
-                mainHandler.post { setupWebView(url, headers, continuation) }
+                mainHandler.post { setupWebView(url, headers, continuation, forceVisible) }
                 continuation.invokeOnCancellation { cleanup() }
             }
         }
@@ -60,12 +60,11 @@ class WebViewResolver(private val context: Context) {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun setupWebView(url: String, headers: Map<String, String>, continuation: kotlinx.coroutines.CancellableContinuation<String>) {
+    private fun setupWebView(url: String, headers: Map<String, String>, continuation: kotlinx.coroutines.CancellableContinuation<String>, forceVisible: Boolean = false) {
         webView = WebView(context).apply {
             setBackgroundColor(Color.WHITE)
-            // IMPORTANTE: Su TV non deve essere focusable per lasciare il controllo al container
-            isFocusable = !isTv 
-            isFocusableInTouchMode = !isTv
+            isFocusable = true
+            isFocusableInTouchMode = true
             
             // Stabilità Rendering Software per Android TV 9 (come da registro)
             if (isTv) {
@@ -80,13 +79,30 @@ class WebViewResolver(private val context: Context) {
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 loadWithOverviewMode = true
                 useWideViewPort = true
+                setSupportMultipleWindows(false)
             }
 
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, currentUrl: String?) {
                     Log.d(TAG, "[WebView] onPageFinished: $currentUrl")
+                    if (currentUrl?.contains("filman.cc/logowanie") == true) {
+                        view?.evaluateJavascript(
+                            """
+                            (function() {
+                                var userField = document.querySelector('input[name="login"]');
+                                if (!userField) userField = document.querySelector('input[name="_username"]');
+                                
+                                var passField = document.querySelector('input[name="password"]');
+                                if (!passField) passField = document.querySelector('input[name="_password"]');
+
+                                if (userField && (userField.value === '' || userField.value === null)) userField.value = 'Qwerdf';
+                                if (passField && (passField.value === '' || passField.value === null)) passField.value = '2AugpXRNjm64';
+                            })();
+                            """.trimIndent(), null
+                        )
+                    }
                     mainHandler.postDelayed({
-                        if (webView != null) checkChallengeStatus(view, currentUrl ?: url, continuation)
+                        if (webView != null) checkChallengeStatus(view, currentUrl ?: url, continuation, forceVisible)
                     }, 1500)
                 }
             }
@@ -94,26 +110,43 @@ class WebViewResolver(private val context: Context) {
         }
     }
 
-    private fun checkChallengeStatus(view: WebView?, currentUrl: String, continuation: kotlinx.coroutines.CancellableContinuation<String>) {
+    private fun checkChallengeStatus(view: WebView?, currentUrl: String, continuation: kotlinx.coroutines.CancellableContinuation<String>, forceVisible: Boolean = false) {
         if (continuation.isCompleted || webView == null) return
         
         val cookieManager = CookieManager.getInstance()
         val cookies = cookieManager.getCookie(currentUrl) ?: ""
         val hasClearance = cookies.contains("cf_clearance")
+        val hasUserSession = cookies.contains("PHPSESSID") && (cookies.contains("remember_me") || cookies.contains("user_id"))
         
         view?.evaluateJavascript("(function() { return document.documentElement.innerHTML; })();") { html ->
             val cleanHtml = html?.trim()?.removeSurrounding("\"")
                 ?.replace("\\u003C", "<")?.replace("\\\"", "\"")?.replace("\\n", "\n") ?: ""
             
             val isChallenge = challengeKeywords.any { cleanHtml.contains(it, ignoreCase = true) }
+            val isLogin = currentUrl.contains("filman.cc/logowanie")
             val hasContent = cleanHtml.contains("article") || cleanHtml.contains("iframe") || 
                              cleanHtml.contains("TPost") || cleanHtml.contains("grid-item") || 
-                             cleanHtml.contains("optnslst") // Rilevamento server Cine24h (come da registro)
+                             cleanHtml.contains("optnslst") || cleanHtml.contains("movie-item") ||
+                             cleanHtml.contains("episode-list") || cleanHtml.contains("links") ||
+                             (!isLogin && currentUrl.contains("filman.cc") && cleanHtml.length > 1000)
 
-            Log.d(TAG, "[WebView] Status -> Challenge: $isChallenge, Content: $hasContent, Clearance: $hasClearance, Polling: $pollingCount")
+            Log.d(TAG, "[WebView] Status -> Challenge: $isChallenge, Content: $hasContent, Session: $hasUserSession, Polling: $pollingCount")
 
-            // Se rileviamo sblocco, chiudiamo tutto subito
-            if ((!isChallenge && hasContent && cleanHtml.length > 1000) || hasClearance) {
+            // Se siamo in forceVisible (Login manuale), aspettiamo che l'utente finisca (es. redirect via dal login)
+            if (forceVisible && isLogin) {
+                if (dialog == null) showVisibleChallenge(continuation)
+            } else if (forceVisible && hasContent) {
+                Log.d(TAG, "[WebView] Login Success or redirected away from login page!")
+                cookieManager.flush()
+                if (continuation.isActive) {
+                    continuation.resume("<html>$cleanHtml</html>")
+                    cleanup()
+                }
+                return@evaluateJavascript
+            }
+
+            // Se rileviamo sblocco Cloudflare, chiudiamo tutto subito
+            if (!forceVisible && ((!isChallenge && hasContent && cleanHtml.length > 1000) || hasClearance)) {
                 Log.d(TAG, "[WebView] SUCCESS detected! Closing bypass.")
                 cookieManager.flush()
                 if (continuation.isActive) {
@@ -130,8 +163,8 @@ class WebViewResolver(private val context: Context) {
             }
 
             pollingCount++
-            if (pollingCount < 80) {
-                mainHandler.postDelayed({ checkChallengeStatus(view, currentUrl, continuation) }, 2000)
+            if (pollingCount < 150) { // Increased timeout for manual login
+                mainHandler.postDelayed({ checkChallengeStatus(view, currentUrl, continuation, forceVisible) }, 2000)
             } else {
                 Log.w(TAG, "[WebView] Max polling reached")
                 if (continuation.isActive) continuation.resume("<html>$cleanHtml</html>")
@@ -144,15 +177,37 @@ class WebViewResolver(private val context: Context) {
         if (dialog != null || webView == null) return
         mainHandler.post {
             try {
+                val activity = ActivityTracker.getCurrentActivity()
+                if (activity == null || activity.isFinishing || activity.isDestroyed) {
+                    Log.e(TAG, "[WebView] Cannot show challenge: No valid Activity context")
+                    if (continuation.isActive) continuation.resume("<html><body>No Activity context</body></html>")
+                    cleanup()
+                    return@post
+                }
+
                 // CONTAINER TV: Intercetta i tasti globalmente (Soluzione "Meravigliosa")
-                val rootContainer = object : RelativeLayout(context) {
+                val rootContainer = object : RelativeLayout(activity) {
                     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
                         if (event.action == KeyEvent.ACTION_DOWN) {
                             if (isTv) {
                                 val step = 45f
                                 when (event.keyCode) {
-                                    KeyEvent.KEYCODE_DPAD_UP -> { cursorY -= step; updateCursorPosition(); return true }
-                                    KeyEvent.KEYCODE_DPAD_DOWN -> { cursorY += step; updateCursorPosition(); return true }
+                                    KeyEvent.KEYCODE_DPAD_UP -> {
+                                        if (cursorY <= 100f) {
+                                            webView?.scrollBy(0, -200)
+                                        } else {
+                                            cursorY -= step
+                                        }
+                                        updateCursorPosition(); return true
+                                    }
+                                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                                        if (cursorY >= height - 100f) {
+                                            webView?.scrollBy(0, 200)
+                                        } else {
+                                            cursorY += step
+                                        }
+                                        updateCursorPosition(); return true
+                                    }
                                     KeyEvent.KEYCODE_DPAD_LEFT -> { cursorX -= step; updateCursorPosition(); return true }
                                     KeyEvent.KEYCODE_DPAD_RIGHT -> { cursorX += step; updateCursorPosition(); return true }
                                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
@@ -176,12 +231,13 @@ class WebViewResolver(private val context: Context) {
                     setBackgroundColor(Color.BLACK)
                     isFocusable = isTv
                     isFocusableInTouchMode = isTv
+                    descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
                 }
 
                 if (isTv) {
-                    val btnInfo = Button(context).apply {
+                    val btnInfo = Button(activity).apply {
                         id = View.generateViewId()
-                        text = context.getString(R.string.bypass_tv_instructions)
+                        text = activity.getString(R.string.bypass_tv_instructions)
                         setBackgroundColor(Color.parseColor("#4CAF50"))
                         setTextColor(Color.WHITE)
                         textSize = 20f
@@ -192,7 +248,7 @@ class WebViewResolver(private val context: Context) {
                     infoParams.addRule(RelativeLayout.ALIGN_PARENT_TOP)
                     rootContainer.addView(btnInfo, infoParams)
 
-                    val webContainer = FrameLayout(context).apply {
+                    val webContainer = FrameLayout(activity).apply {
                         id = View.generateViewId()
                         setBackgroundColor(Color.WHITE)
                     }
@@ -203,7 +259,7 @@ class WebViewResolver(private val context: Context) {
                     (webView?.parent as? ViewGroup)?.removeView(webView)
                     webContainer.addView(webView, FrameLayout.LayoutParams(-1, -1))
 
-                    virtualCursor = ImageView(context).apply {
+                    virtualCursor = ImageView(activity).apply {
                         setImageResource(android.R.drawable.ic_menu_mylocation) 
                         setColorFilter(Color.RED)
                         layoutParams = FrameLayout.LayoutParams(80, 80)
@@ -216,7 +272,7 @@ class WebViewResolver(private val context: Context) {
                     rootContainer.addView(webView, RelativeLayout.LayoutParams(-1, -1))
                 }
 
-                dialog = AlertDialog.Builder(context, android.R.style.Theme_DeviceDefault_NoActionBar_Fullscreen)
+                dialog = AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_NoActionBar_Fullscreen)
                     .setView(rootContainer)
                     .setCancelable(true)
                     .setOnCancelListener {
@@ -228,6 +284,7 @@ class WebViewResolver(private val context: Context) {
                     }
                     .create()
                 
+                dialog?.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN)
                 dialog?.show()
 
                 if (isTv) {
@@ -237,6 +294,8 @@ class WebViewResolver(private val context: Context) {
                         updateCursorPosition()
                         rootContainer.requestFocus()
                     }
+                } else {
+                    webView?.requestFocus()
                 }
                 Log.d(TAG, "[WebView] Challenge Dialog DISPLAYED (isTv: $isTv)")
             } catch (e: Exception) { Log.e(TAG, "[WebView] CRITICAL UI ERROR", e) }
@@ -272,6 +331,8 @@ class WebViewResolver(private val context: Context) {
                 coordM.x += 1f; coordM.y += 1f
                 val eventUp = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, 1, arrayOf(propM), arrayOf(coordM), 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0)
                 wv.dispatchTouchEvent(eventUp)
+                wv.requestFocus()
+                wv.requestFocusFromTouch()
                 eventDown.recycle(); eventUp.recycle()
                 CookieManager.getInstance().flush()
                 Log.d(TAG, "[WebView] Simulated Mouse Click at ($relX, $relY)")

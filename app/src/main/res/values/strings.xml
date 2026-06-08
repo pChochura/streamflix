@@ -52,6 +52,7 @@
     <string name="search_error">Error</string>
     <string name="result">Result</string>
     <string name="results">Results</string>
+    <string name="no_results">No results found</string>
     <string name="switching_to_provider">Switching to %s</string>
 
     <string name="home_swiper_watch_now">Watch Now</string>

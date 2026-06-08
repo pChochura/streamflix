@@ -108,6 +108,11 @@ class SearchTvFragment : Fragment() {
                         appAdapter.isLoading = false
                         binding.vgvSearch.visibility = View.VISIBLE
                         binding.isLoading.root.visibility = View.GONE
+                        if (state.results.isEmpty() && viewModel.query.isNotEmpty()) {
+                            Toast.makeText(requireContext(), R.string.no_results, Toast.LENGTH_SHORT).show()
+                        } else if (state.results.isNotEmpty()) {
+                             focusSearchContent()
+                        }
                     }
                     is State.SuccessGlobalSearching -> {
                         displayGlobalSearch(state.providerResults)
@@ -195,7 +200,8 @@ class SearchTvFragment : Fragment() {
                 val isSubmitKey =
                     event?.action == KeyEvent.ACTION_DOWN &&
                         (event.keyCode == KeyEvent.KEYCODE_ENTER ||
-                            event.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER)
+                            event.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+                            event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER)
 
                 if (isSubmitAction || isSubmitKey) {
                     return@setOnEditorActionListener submitSearch()
@@ -215,6 +221,7 @@ class SearchTvFragment : Fragment() {
                 if (
                     keyCode == KeyEvent.KEYCODE_ENTER ||
                     keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+                    keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
                     keyCode == KeyEvent.KEYCODE_SEARCH
                 ) {
                     return@setOnKeyListener submitSearch()
@@ -299,7 +306,7 @@ class SearchTvFragment : Fragment() {
             })
         }
 
-        binding.root.requestFocus()
+        binding.etSearch.requestFocus()
     }
 
     private fun focusSearchContent(): Boolean {

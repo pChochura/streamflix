@@ -38,13 +38,16 @@ object ParentalControlUtils {
     suspend fun <T : AppAdapter.Item> filterItems(items: List<T>): List<T> {
         if (!UserPreferences.isParentalControlActive) return items
 
-        return coroutineScope {
+        val filtered = coroutineScope {
             val visibility = items.map { item ->
                 async { filterItem(item) != null }
             }.awaitAll()
 
             items.filterIndexed { index, _ -> visibility[index] }
         }
+        
+        android.util.Log.d("ParentalControl", "Filtered items: ${items.size} -> ${filtered.size}")
+        return filtered
     }
 
     private suspend fun filterItem(item: AppAdapter.Item): AppAdapter.Item? {
