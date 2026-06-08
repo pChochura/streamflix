@@ -16,8 +16,6 @@ import com.streamflixreborn.streamflix.models.TvShow
 import com.streamflixreborn.streamflix.models.Video
 import com.streamflixreborn.streamflix.utils.NetworkClient
 import com.streamflixreborn.streamflix.utils.WebViewResolver
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.Request
@@ -38,6 +36,9 @@ object FilmanCcProvider : Provider {
     private val providerMutex = Mutex()
     private const val TAG = "FilmanCc"
 
+    private var lastDocUrl: String? = null
+    private var lastDoc: Document? = null
+
     private fun getResolver(): WebViewResolver {
         return webViewResolver ?: WebViewResolver(StreamFlixApp.instance).also {
             webViewResolver = it
@@ -49,12 +50,17 @@ object FilmanCcProvider : Provider {
     }
 
     private suspend fun getDocument(url: String, depth: Int = 0): Document {
+        if (depth == 0 && url == lastDocUrl && lastDoc != null) {
+            Log.d(TAG, "[Provider] Cache HIT for $url")
+            return lastDoc!!
+        }
+
         if (depth > 2) return Jsoup.parse("<html><body>Too many redirects/login attempts</body></html>")
 
-        try {
+        val resultDoc = try {
             val client = NetworkClient.default.newBuilder()
-                .connectTimeout(5, TimeUnit.SECONDS)
-                .readTimeout(5, TimeUnit.SECONDS)
+                .connectTimeout(3, TimeUnit.SECONDS)
+                .readTimeout(3, TimeUnit.SECONDS)
                 .build()
 
             val request = Request.Builder()
@@ -71,15 +77,27 @@ object FilmanCcProvider : Provider {
                 // Se siamo stati reindirizzati alla pagina di login, o se l'HTML contiene indicatori di login richiesto
                 if (responseUrl.contains("/logowanie") || html.contains("Zaloguj się") || html.contains("login-form")) {
                     Log.d(TAG, "[Provider] Login required detected for $url")
-                    return triggerManualLogin(url, depth)
+                    triggerManualLogin(url, depth)
+                } else if (!html.contains("cf-browser-verification") && !html.contains("Checking your browser") && !html.contains("Just a moment...")) {
+                    Jsoup.parse(html).apply { setBaseUri(baseUrl) }
+                } else {
+                    launchWebViewBypass(url, depth)
                 }
-
-                if (!html.contains("cf-browser-verification") && !html.contains("Checking your browser") && !html.contains("Just a moment...")) {
-                    return Jsoup.parse(html).apply { setBaseUri(baseUrl) }
-                }
+            } else {
+                launchWebViewBypass(url, depth)
             }
-        } catch (_: Exception) { }
+        } catch (_: Exception) { 
+            launchWebViewBypass(url, depth)
+        }
 
+        if (depth == 0) {
+            lastDocUrl = url
+            lastDoc = resultDoc
+        }
+        return resultDoc
+    }
+
+    private suspend fun launchWebViewBypass(url: String, depth: Int): Document {
         Log.d(TAG, "[Provider] Launching WebView Bypass for $url")
         val html = getResolver().get(url)
         Log.d(TAG, "[Provider] WebView Bypass finished for $url. HTML length: ${html.length}")
@@ -318,64 +336,30 @@ object FilmanCcProvider : Provider {
         val servers = mutableListOf<Video.Server>()
         val rows = doc.select("#link-list table#links tbody tr.version")
         
-        coroutineScope {
-            val jobs = rows.map { row ->
-                async {
-                    val linkAnchor = row.selectFirst(".link-to-video a") ?: return@async null
-                    val linkId = linkAnchor.attr("data-id").ifBlank { linkAnchor.attr("data-link-id") }
-                    if (linkId.isBlank()) return@async null
+        rows.forEach { row ->
+            val linkAnchor = row.selectFirst(".link-to-video a") ?: return@forEach
+            val linkId = linkAnchor.attr("data-id").ifBlank { linkAnchor.attr("data-link-id") }
+            if (linkId.isBlank()) return@forEach
 
-                    val nameImg = row.selectFirst("td img")
-                    val serverHost = nameImg?.attr("alt")?.trim() 
-                        ?: row.select("td").firstOrNull()?.text()?.trim() 
-                        ?: "Unknown"
+            val nameImg = row.selectFirst("td img")
+            val serverHost = nameImg?.attr("alt")?.trim() 
+                ?: row.select("td").firstOrNull()?.text()?.trim() 
+                ?: "Unknown"
 
-                    val version = row.select("td").getOrNull(1)?.text()?.trim().orEmpty()
-                    val quality = row.select("td").getOrNull(2)?.text()?.trim().orEmpty()
+            val version = row.select("td").getOrNull(1)?.text()?.trim().orEmpty()
+            val quality = row.select("td").getOrNull(2)?.text()?.trim().orEmpty()
 
-                    val displayName = buildString {
-                        append(serverHost)
-                        if (version.isNotBlank()) append(" [$version]")
-                        if (quality.isNotBlank()) append(" ($quality)")
-                    }
-
-                    try {
-                        val ajaxUrl = "$baseUrl/link/token?link_id=$linkId&rt=$routeToken"
-                        val client = NetworkClient.default
-                        val request = Request.Builder()
-                            .url(ajaxUrl)
-                            .header("X-Requested-With", "XMLHttpRequest")
-                            .header("Referer", "$baseUrl/$id")
-                            .build()
-                        
-                        val response = client.newCall(request).execute()
-                        if (response.isSuccessful) {
-                            val jsonStr = response.body?.string() ?: ""
-                            val jsonObj = org.json.JSONObject(jsonStr)
-                            if (jsonObj.optBoolean("ok")) {
-                                val encodedUrl = jsonObj.optString("url")
-                                val decodedUrl = String(Base64.getDecoder().decode(encodedUrl), Charsets.UTF_8)
-                                if (decodedUrl.startsWith("http")) {
-                                    val finalUrl = if (decodedUrl.contains("tmp-url.pro")) {
-                                        resolveTmpUrl(decodedUrl) ?: decodedUrl
-                                    } else {
-                                        decodedUrl
-                                    }
-                                    Video.Server(
-                                        id = finalUrl,
-                                        name = displayName,
-                                        src = finalUrl
-                                    )
-                                } else null
-                            } else null
-                        } else null
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error fetching/decrypting server link: ${e.message}")
-                        null
-                    }
-                }
+            val displayName = buildString {
+                append(serverHost)
+                if (version.isNotBlank()) append(" [$version]")
+                if (quality.isNotBlank()) append(" ($quality)")
             }
-            servers.addAll(jobs.mapNotNull { it.await() })
+
+            servers.add(Video.Server(
+                id = linkId,
+                name = displayName,
+                src = "$linkId|$routeToken|$baseUrl/$id"
+            ))
         }
 
         return servers.sortedWith(compareByDescending<Video.Server> {
@@ -386,7 +370,47 @@ object FilmanCcProvider : Provider {
     }
 
     override suspend fun getVideo(server: Video.Server): Video {
-        return Extractor.extract(server.src, server)
+        val parts = server.src.split("|")
+        if (parts.size < 2) {
+            return if (server.src.startsWith("http")) Extractor.extract(server.src, server)
+            else Video(source = "")
+        }
+
+        val linkId = parts[0]
+        val routeToken = parts[1]
+        val referer = parts.getOrNull(2) ?: baseUrl
+
+        try {
+            val ajaxUrl = "$baseUrl/link/token?link_id=$linkId&rt=$routeToken"
+            val client = NetworkClient.default
+            val request = Request.Builder()
+                .url(ajaxUrl)
+                .header("X-Requested-With", "XMLHttpRequest")
+                .header("Referer", referer)
+                .build()
+            
+            val response = client.newCall(request).execute()
+            if (response.isSuccessful) {
+                val jsonStr = response.body?.string() ?: ""
+                val jsonObj = org.json.JSONObject(jsonStr)
+                if (jsonObj.optBoolean("ok")) {
+                    val encodedUrl = jsonObj.optString("url")
+                    val decodedUrl = String(Base64.getDecoder().decode(encodedUrl), Charsets.UTF_8)
+                    if (decodedUrl.startsWith("http")) {
+                        val finalUrl = if (decodedUrl.contains("tmp-url.pro")) {
+                            resolveTmpUrl(decodedUrl) ?: decodedUrl
+                        } else {
+                            decodedUrl
+                        }
+                        return Extractor.extract(finalUrl, server.copy(src = finalUrl))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching/decrypting server link: ${e.message}")
+        }
+
+        return Video(source = "")
     }
 
     private fun resolveTmpUrl(url: String): String? {
