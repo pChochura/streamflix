@@ -44,10 +44,16 @@
 
 ### 🔄 What is Streamflix Reborn?
 
-- **Independent Continuation**: This is an independent continuation of the original Streamflix project
+- **Independent Continuation**: This is a fork and independent continuation of the original Streamflix project
 - **Same Vision**: Maintains the original educational and open-source philosophy
 - **Enhanced Support**: Continued development and bug fixes by an independent developer
 - **Respectful Fork**: Built with full respect for the original creator's work
+
+#### 🚀 Improvements in this Fork
+- **New Video Source**: Added full support for the `filman.cc` Polish provider.
+- **Fixed Data Duplication**: Corrected parsing bugs that caused duplicate items on the Home, Movies, and TV Shows screens.
+- **Featured Sections**: Added extraction of "Polecane" (Featured) sliders/carousels to the Home screen.
+- **Early Login Option**: Introduced the ability to securely login from the home screen before browsing to access personalized data.
 
 Streamflix Reborn is an open-source Android TV and mobile app that provides a user interface for accessing publicly available streaming content from various third-party providers.
 
