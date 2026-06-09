@@ -18,7 +18,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
-        <androidx.leanback.widget.SearchEditText
+        <EditText
             android:id="@+id/et_search"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
@@ -32,6 +32,9 @@
             android:hint="@string/search_input_hint"
             android:imeOptions="actionSearch"
             android:inputType="text"
+            android:background="@android:color/transparent"
+            android:textColor="@android:color/white"
+            android:textColorHint="#80FFFFFF"
             android:maxLines="1"
             android:nextFocusRight="@+id/btn_search_clear"
             android:nextFocusDown="@id/ll_global_search"
@@ -39,7 +42,8 @@
             android:textSize="16sp"
             app:layout_constraintEnd_toStartOf="@+id/btn_search_clear"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent" />
+            app:layout_constraintTop_toTopOf="parent"
+            tools:ignore="Autofill" />
 
         <ImageView
             android:id="@+id/btn_search_clear"

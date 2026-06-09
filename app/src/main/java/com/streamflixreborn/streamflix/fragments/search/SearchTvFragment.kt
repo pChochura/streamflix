@@ -37,6 +37,7 @@ import com.streamflixreborn.streamflix.providers.Provider
 
 class SearchTvFragment : Fragment() {
 
+    private var wasSearchTriggered: Boolean = false
     private var hasAutoCleared409: Boolean = false
     private var _binding: FragmentSearchTvBinding? = null
     private val binding get() = _binding!!
@@ -110,7 +111,8 @@ class SearchTvFragment : Fragment() {
                         binding.isLoading.root.visibility = View.GONE
                         if (state.results.isEmpty() && viewModel.query.isNotEmpty()) {
                             Toast.makeText(requireContext(), R.string.no_results, Toast.LENGTH_SHORT).show()
-                        } else if (state.results.isNotEmpty()) {
+                        } else if (wasSearchTriggered && state.results.isNotEmpty()) {
+                             wasSearchTriggered = false
                              focusSearchContent()
                         }
                     }
@@ -167,6 +169,15 @@ class SearchTvFragment : Fragment() {
         val query = binding.etSearch.text?.toString().orEmpty()
         hideKeyboard()
 
+        if (UserPreferences.currentProvider == null) {
+            Toast.makeText(requireContext(), "No provider selected", Toast.LENGTH_SHORT).show()
+            return true
+        }
+
+        if (query.isNotBlank()) {
+            wasSearchTriggered = true
+        }
+
         if (isGlobalSearchChecked) {
             if (query.isBlank()) {
                 Toast.makeText(requireContext(), getString(R.string.search_empty_query), Toast.LENGTH_SHORT).show()
@@ -192,6 +203,11 @@ class SearchTvFragment : Fragment() {
         }
 
         binding.etSearch.apply {
+            setOnClickListener {
+                requestFocus()
+                val imm = requireContext().getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                imm.showSoftInput(this, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+            }
             setOnEditorActionListener { _, actionId, event ->
                 val isSubmitAction =
                     actionId == EditorInfo.IME_ACTION_SEARCH ||
@@ -200,8 +216,7 @@ class SearchTvFragment : Fragment() {
                 val isSubmitKey =
                     event?.action == KeyEvent.ACTION_DOWN &&
                         (event.keyCode == KeyEvent.KEYCODE_ENTER ||
-                            event.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
-                            event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER)
+                            event.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER)
 
                 if (isSubmitAction || isSubmitKey) {
                     return@setOnEditorActionListener submitSearch()
@@ -221,7 +236,6 @@ class SearchTvFragment : Fragment() {
                 if (
                     keyCode == KeyEvent.KEYCODE_ENTER ||
                     keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
-                    keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
                     keyCode == KeyEvent.KEYCODE_SEARCH
                 ) {
                     return@setOnKeyListener submitSearch()
