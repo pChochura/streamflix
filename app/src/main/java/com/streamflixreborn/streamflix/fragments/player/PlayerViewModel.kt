@@ -101,6 +101,7 @@ class PlayerViewModel(
             prefetchedVideo = null
             prefetchedVideoServer = null
         } else {
+            prefetchJob?.cancel()
             getServers(episode, episode.id)
         }
         getSubtitles(episode)
@@ -114,7 +115,8 @@ class PlayerViewModel(
         prefetchedVideo = null
         prefetchedVideoServer = null
 
-        viewModelScope.launch(Dispatchers.IO) {
+        prefetchJob?.cancel()
+        prefetchJob = viewModelScope.launch(Dispatchers.IO) {
             Log.d("PlayerViewModel", "Prefetching next episode: ${episode.id}")
             try {
                 val servers = UserPreferences.currentProvider!!.getServers(episode.id, episode)
@@ -296,6 +298,7 @@ class PlayerViewModel(
     private var lastId: String? = null
 
     // Prefetching State
+    private var prefetchJob: kotlinx.coroutines.Job? = null
     private var prefetchedEpisodeId: String? = null
     private var prefetchedServers: List<Video.Server>? = null
     private var prefetchedVideo: Video? = null
