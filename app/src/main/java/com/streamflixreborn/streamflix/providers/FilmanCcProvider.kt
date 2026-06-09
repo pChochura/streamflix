@@ -318,10 +318,22 @@ object FilmanCcProvider : Provider {
                     val anchor = episodeLi.selectFirst("a") ?: return@mapNotNull null
                     val epHref = anchor.attr("href")
                     val epText = anchor.text().trim()
-                    val epNumber = Regex("""e(\d+)""").find(epText.lowercase())?.groupValues?.getOrNull(1)?.toIntOrNull()
-                        ?: Regex("""\d+""").find(epText)?.value?.toIntOrNull()
-                        ?: 0
-                    val epTitle = epText.replace(Regex("""^\[.*?\]\s*"""), "").trim()
+                    
+                    // Parse "[S01E05] Episode Name" format
+                    val bracketMatch = Regex("""^\[S(\d+)E(\d+)\]\s*(.*)""", RegexOption.IGNORE_CASE).find(epText)
+                    val epNumber: Int
+                    val epTitle: String
+                    
+                    if (bracketMatch != null) {
+                        epNumber = bracketMatch.groupValues[2].toIntOrNull() ?: 0
+                        epTitle = bracketMatch.groupValues[3].trim().ifBlank { "Odcinek $epNumber" }
+                    } else {
+                        // Fallback: try to extract any episode number
+                        epNumber = Regex("""[Ee](\d+)""").find(epText)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                            ?: Regex("""\d+""").find(epText)?.value?.toIntOrNull()
+                            ?: 0
+                        epTitle = epText.replace(Regex("""^\[.*?\]\s*"""), "").trim().ifBlank { "Odcinek $epNumber" }
+                    }
                     
                     Episode(
                         id = parsePathId(epHref),
@@ -531,13 +543,26 @@ object FilmanCcProvider : Provider {
     }
 
     private fun parseItems(document: org.jsoup.nodes.Element): List<AppAdapter.Item> {
-        val items = document.select("#item-list > div, .movie-item, .item-list > div, .film-item, .col-xs-6, #results > div")
-        return items.mapNotNull { el ->
+        // Use a single primary selector to avoid matching the same element multiple times.
+        // On filman.cc, items are plain <div>s inside #item-list.
+        val candidates = document.select("#item-list > div")
+            .ifEmpty { document.select(".item-list > div") }
+            .ifEmpty { document.select("#results > div") }
+            .ifEmpty { document.select(".poster, .movie-item, .film-item, .col-xs-6") }
+
+        // Deduplicate by element identity (same DOM node matched by multiple selectors)
+        val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<org.jsoup.nodes.Element, Boolean>())
+        
+        return candidates.mapNotNull { el ->
+            if (!seen.add(el)) return@mapNotNull null
+            
             val anchor = el.selectFirst(".poster a, a:has(picture), a:has(img)") ?: el.selectFirst("a") ?: return@mapNotNull null
             val href = anchor.attr("href")
+            if (href.isBlank()) return@mapNotNull null
             
+            // filman.cc uses /m/{id} for movies and /s/{id} for TV shows
             val isMovie = href.contains("/m/") || href.contains("/film/")
-            val isShow = href.contains("/s/") || href.contains("/serial/")
+            val isShow = href.contains("/s/") || href.contains("/serial/") || href.contains("/e/")
             if (!isMovie && !isShow) return@mapNotNull null
             
             val id = parsePathId(href)
