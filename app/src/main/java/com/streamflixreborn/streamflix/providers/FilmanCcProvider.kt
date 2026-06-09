@@ -211,8 +211,8 @@ object FilmanCcProvider : Provider {
     override suspend fun search(query: String, page: Int): List<AppAdapter.Item> {
         if (query.isBlank()) {
             return listOf(
-                Genre(id = "filmy", name = "Filmy"),
-                Genre(id = "seriale", name = "Seriale")
+                Genre(id = "filmy/", name = "Filmy"),
+                Genre(id = "seriale/", name = "Seriale")
             )
         }
         val url = "$baseUrl/search?phrase=${URLEncoder.encode(query, "UTF-8")}&page=$page"
@@ -237,13 +237,13 @@ object FilmanCcProvider : Provider {
     }
 
     override suspend fun getMovies(page: Int): List<Movie> {
-        val url = if (page == 1) "$baseUrl/filmy" else "$baseUrl/filmy?page=$page"
+        val url = if (page == 1) "$baseUrl/filmy/" else "$baseUrl/filmy/?page=$page"
         val doc = getDocument(url)
         return parseItems(getMainContainer(doc)).filterIsInstance<Movie>()
     }
 
     override suspend fun getTvShows(page: Int): List<TvShow> {
-        val url = if (page == 1) "$baseUrl/seriale" else "$baseUrl/seriale?page=$page"
+        val url = if (page == 1) "$baseUrl/seriale/" else "$baseUrl/seriale/?page=$page"
         val doc = getDocument(url)
         return parseItems(getMainContainer(doc)).filterIsInstance<TvShow>()
     }
