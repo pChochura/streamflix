@@ -1493,6 +1493,8 @@ class PlayerTvFragment : Fragment() {
         }
 
         private fun showNextEpisodeOverlay(nextEpisode: Video.Type.Episode, remainingMs: Long) {
+            viewModel.prefetchEpisode(nextEpisode)
+
             updateNextEpisodeOverlayFocusBindings(true)
             binding.tvNextEpisodeMeta.text = getString(
                 R.string.tv_show_item_season_number_episode_number,

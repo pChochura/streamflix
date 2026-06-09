@@ -90,8 +90,49 @@ class PlayerViewModel(
         }
     }
     fun playEpisode(episode: Video.Type.Episode) {
-        getServers(episode, episode.id)
+        if (episode.id == prefetchedEpisodeId && prefetchedVideo != null && prefetchedServers != null && prefetchedVideoServer != null) {
+            Log.d("PlayerViewModel", "Using prefetched video for episode ${episode.id}")
+            viewModelScope.launch {
+                _state.emit(State.SuccessLoadingServers(prefetchedServers!!))
+                _state.emit(State.SuccessLoadingVideo(prefetchedVideo!!, prefetchedVideoServer!!))
+            }
+            prefetchedEpisodeId = null
+            prefetchedServers = null
+            prefetchedVideo = null
+            prefetchedVideoServer = null
+        } else {
+            getServers(episode, episode.id)
+        }
         getSubtitles(episode)
+    }
+
+    fun prefetchEpisode(episode: Video.Type.Episode) {
+        if (prefetchedEpisodeId == episode.id) return // Already prefetching/prefetched
+
+        prefetchedEpisodeId = episode.id
+        prefetchedServers = null
+        prefetchedVideo = null
+        prefetchedVideoServer = null
+
+        viewModelScope.launch(Dispatchers.IO) {
+            Log.d("PlayerViewModel", "Prefetching next episode: ${episode.id}")
+            try {
+                val servers = UserPreferences.currentProvider!!.getServers(episode.id, episode)
+                if (servers.isEmpty()) throw Exception("No servers found during prefetch")
+                prefetchedServers = servers
+                
+                val bestServer = servers.firstOrNull() ?: throw Exception("No valid server found")
+                val video = UserPreferences.currentProvider!!.getVideo(bestServer)
+                if (video.source.isEmpty()) throw Exception("No source found during prefetch")
+
+                prefetchedVideo = video
+                prefetchedVideoServer = bestServer
+                Log.d("PlayerViewModel", "Prefetch successful for episode: ${episode.id}")
+            } catch (e: Exception) {
+                Log.e("PlayerViewModel", "Prefetch failed: ", e)
+                prefetchedEpisodeId = null // Allow retrying on actual play
+            }
+        }
     }
 
     private fun getServers(videoType: Video.Type, id: String) = viewModelScope.launch(Dispatchers.IO) {
@@ -253,6 +294,13 @@ class PlayerViewModel(
     }
     private var lastVideoType: Video.Type? = null
     private var lastId: String? = null
+
+    // Prefetching State
+    private var prefetchedEpisodeId: String? = null
+    private var prefetchedServers: List<Video.Server>? = null
+    private var prefetchedVideo: Video? = null
+    private var prefetchedVideoServer: Video.Server? = null
+
     fun reloadServersAfterBypass() {
         val type = lastVideoType ?: return
         val id = lastId ?: return
