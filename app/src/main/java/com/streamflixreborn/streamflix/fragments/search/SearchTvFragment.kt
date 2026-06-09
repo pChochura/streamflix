@@ -229,7 +229,12 @@ class SearchTvFragment : Fragment() {
                     return@setOnKeyListener false
                 }
 
-                if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER) {
+                    binding.etSearch.performClick()
+                    return@setOnKeyListener true
+                }
+                
+                if (keyCode == KeyEvent.KEYCODE_ENTER) {
                     if (binding.etSearch.text.isNullOrBlank()) {
                         binding.etSearch.performClick()
                         return@setOnKeyListener true

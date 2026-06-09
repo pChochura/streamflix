@@ -101,8 +101,14 @@ object FilmanCcProvider : Provider {
 
     private suspend fun triggerManualLogin(originalUrl: String, depth: Int): Document {
         Log.d(TAG, "[Provider] Launching QR Code Login Server")
-        val success = loginServer.requestLogin()
-        Log.d(TAG, "[Provider] Login server result: success=$success, retrying $originalUrl")
+        val credentials = loginServer.requestLogin()
+        Log.d(TAG, "[Provider] Login server result: user=${credentials?.user}, launching TV WebView for Recaptcha")
+        
+        if (credentials != null) {
+            val html = getResolver().get("$baseUrl/logowanie", forceVisible = true, credentials = credentials)
+            Log.d(TAG, "[Provider] TV WebView finished, HTML length=${html.length}")
+        }
+        
         return getDocument(originalUrl, depth + 1)
     }
 
@@ -211,7 +217,23 @@ object FilmanCcProvider : Provider {
         }
         val url = "$baseUrl/search?phrase=${URLEncoder.encode(query, "UTF-8")}&page=$page"
         val doc = getDocument(url)
-        return parseItems(getMainContainer(doc))
+        val lists = doc.select("#item-list, .item-list, #results, .content-box")
+        
+        if (lists.isNotEmpty()) {
+            val allItems = mutableListOf<AppAdapter.Item>()
+            for (list in lists) {
+                allItems.addAll(parseItems(list))
+            }
+            return allItems.distinctBy { 
+                when (it) {
+                    is Movie -> it.id
+                    is TvShow -> it.id
+                    else -> it.hashCode()
+                }
+            }
+        }
+        
+        return parseItems(doc)
     }
 
     override suspend fun getMovies(page: Int): List<Movie> {
@@ -228,8 +250,9 @@ object FilmanCcProvider : Provider {
 
     override suspend fun getMovie(id: String): Movie {
         if (id == "login") {
-            val success = loginServer.requestLogin()
-            if (success) {
+            val credentials = loginServer.requestLogin()
+            if (credentials != null) {
+                getResolver().get("$baseUrl/logowanie", forceVisible = true, credentials = credentials)
                 throw Exception("Zalogowano pomyślnie. Odśwież stronę główną.")
             } else {
                 throw Exception("Logowanie anulowane.")
