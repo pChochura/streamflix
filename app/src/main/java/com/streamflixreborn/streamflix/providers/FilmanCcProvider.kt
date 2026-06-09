@@ -36,9 +36,6 @@ object FilmanCcProvider : Provider {
     private val providerMutex = Mutex()
     private const val TAG = "FilmanCc"
 
-    private var lastDocUrl: String? = null
-    private var lastDoc: Document? = null
-
     private fun getResolver(): WebViewResolver {
         return webViewResolver ?: WebViewResolver(StreamFlixApp.instance).also {
             webViewResolver = it
@@ -50,17 +47,12 @@ object FilmanCcProvider : Provider {
     }
 
     private suspend fun getDocument(url: String, depth: Int = 0): Document {
-        if (depth == 0 && url == lastDocUrl && lastDoc != null) {
-            Log.d(TAG, "[Provider] Cache HIT for $url")
-            return lastDoc!!
-        }
-
         if (depth > 2) return Jsoup.parse("<html><body>Too many redirects/login attempts</body></html>")
 
         val resultDoc = try {
             val client = NetworkClient.default.newBuilder()
-                .connectTimeout(3, TimeUnit.SECONDS)
-                .readTimeout(3, TimeUnit.SECONDS)
+                .connectTimeout(5, TimeUnit.SECONDS)
+                .readTimeout(5, TimeUnit.SECONDS)
                 .build()
 
             val request = Request.Builder()
@@ -74,7 +66,6 @@ object FilmanCcProvider : Provider {
                 val responseUrl = response.request.url.toString()
                 val html = response.body?.string() ?: ""
                 
-                // Se siamo stati reindirizzati alla pagina di login, o se l'HTML contiene indicatori di login richiesto
                 if (responseUrl.contains("/logowanie") || html.contains("Zaloguj się") || html.contains("login-form")) {
                     Log.d(TAG, "[Provider] Login required detected for $url")
                     triggerManualLogin(url, depth)
@@ -90,10 +81,6 @@ object FilmanCcProvider : Provider {
             launchWebViewBypass(url, depth)
         }
 
-        if (depth == 0) {
-            lastDocUrl = url
-            lastDoc = resultDoc
-        }
         return resultDoc
     }
 
@@ -106,7 +93,6 @@ object FilmanCcProvider : Provider {
             Log.e(TAG, "[Provider] WebView Bypass TIMEOUT for $url")
         }
         
-        // Verifica se anche il bypass WebView è finito sulla pagina di login
         if (html.contains("filman.cc/logowanie") || html.contains("Zaloguj się")) {
              return triggerManualLogin(url, depth)
         }
@@ -116,11 +102,9 @@ object FilmanCcProvider : Provider {
 
     private suspend fun triggerManualLogin(originalUrl: String, depth: Int): Document {
         Log.d(TAG, "[Provider] Launching MANUAL LOGIN via WebView")
-        // Mostriamo forzatamente la pagina di login
         val loginUrl = "$baseUrl/logowanie"
         getResolver().get(loginUrl, forceVisible = true)
         
-        // Dopo il login (o chiusura dialog), riproviamo a caricare l'URL originale
         Log.d(TAG, "[Provider] Manual login finished, retrying $originalUrl")
         return getDocument(originalUrl, depth + 1)
     }
@@ -173,119 +157,125 @@ object FilmanCcProvider : Provider {
         return parseItems(doc).filterIsInstance<TvShow>()
     }
 
-    override suspend fun getMovie(id: String): Movie = getDocument("$baseUrl/$id").let { doc ->
-        val title = doc.selectFirst("h1[itemprop=\"name\"]")?.text()?.replace(doc.selectFirst("h1 .flm-online-badge")?.text() ?: "", "")?.trim() ?: ""
-        val overview = doc.selectFirst("#item-content p.description, p.description")?.text()?.trim()
-        val poster = doc.selectFirst("meta[property=\"og:image\"]")?.attr("content")
-            ?: doc.selectFirst("img.main-poster")?.let { it.attr("abs:data-src").ifBlank { it.attr("data-src").ifBlank { it.attr("abs:src").ifBlank { it.attr("src") } } } }
-        
-        val bannerStyle = doc.selectFirst("#item-headline")?.attr("style") ?: ""
-        val banner = Regex("""url\(['"]?(.*?)['"]?\)""").find(bannerStyle)?.groupValues?.getOrNull(1)?.let { doc.absUrl(it) }
+    override suspend fun getMovie(id: String): Movie {
+        val url = if (id.startsWith("http")) id else "$baseUrl/$id"
+        return getDocument(url).let { doc ->
+            val title = doc.selectFirst("h1[itemprop=\"name\"]")?.text()?.replace(doc.selectFirst("h1 .flm-online-badge")?.text() ?: "", "")?.trim() ?: ""
+            val overview = doc.selectFirst("#item-content p.description, p.description")?.text()?.trim()
+            val poster = doc.selectFirst("meta[property=\"og:image\"]")?.attr("content")
+                ?: doc.selectFirst("img.main-poster")?.let { it.attr("abs:data-src").ifBlank { it.attr("data-src").ifBlank { it.attr("abs:src").ifBlank { it.attr("src") } } } }
+            
+            val bannerStyle = doc.selectFirst("#item-headline")?.attr("style") ?: ""
+            val banner = Regex("""url\(['"]?(.*?)['"]?\)""").find(bannerStyle)?.groupValues?.getOrNull(1)?.let { doc.absUrl(it) }
 
-        var year: String? = null
-        var rating: Double? = null
-        var runtime: Int? = null
+            var year: String? = null
+            var rating: Double? = null
+            var runtime: Int? = null
 
-        doc.select(".flm-meta-item").forEach { item ->
-            val icon = item.selectFirst(".flm-meta-icon")?.text() ?: ""
-            val value = item.selectFirst(".flm-meta-value")?.text() ?: ""
-            when {
-                icon.contains("📅") -> year = value.trim()
-                icon.contains("⭐") -> rating = value.trim().toDoubleOrNull()
-                icon.contains("⏱️") -> {
-                    runtime = value.replace("min", "").trim().toIntOrNull()
+            doc.select(".flm-meta-item").forEach { item ->
+                val icon = item.selectFirst(".flm-meta-icon")?.text() ?: ""
+                val value = item.selectFirst(".flm-meta-value")?.text() ?: ""
+                when {
+                    icon.contains("📅") -> year = value.trim()
+                    icon.contains("⭐") -> rating = value.trim().toDoubleOrNull()
+                    icon.contains("⏱️") -> {
+                        runtime = value.replace("min", "").trim().toIntOrNull()
+                    }
                 }
             }
-        }
 
-        val genres = doc.select(".flm-genre-tags a.flm-genre-tag, .flm-genre-tags a[itemprop=\"genre\"]").map {
-            Genre(
-                id = parsePathId(it.attr("href")),
-                name = it.text().trim()
+            val genres = doc.select(".flm-genre-tags a.flm-genre-tag, .flm-genre-tags a[itemprop=\"genre\"]").map {
+                Genre(
+                    id = parsePathId(it.attr("href")),
+                    name = it.text().trim()
+                )
+            }
+
+            return@let Movie(
+                id = id,
+                title = title,
+                overview = overview,
+                released = year,
+                runtime = runtime,
+                rating = rating,
+                poster = poster,
+                banner = banner,
+                genres = genres
             )
         }
-
-        return Movie(
-            id = id,
-            title = title,
-            overview = overview,
-            released = year,
-            runtime = runtime,
-            rating = rating,
-            poster = poster,
-            banner = banner,
-            genres = genres
-        )
     }
 
-    override suspend fun getTvShow(id: String): TvShow = getDocument("$baseUrl/$id").let { doc ->
-        val title = doc.selectFirst("h1[itemprop=\"name\"]")?.text()?.replace(doc.selectFirst("h1 .flm-online-badge")?.text() ?: "", "")?.trim() ?: ""
-        val overview = doc.selectFirst("#item-content p.description, p.description")?.text()?.trim()
-        val poster = doc.selectFirst("meta[property=\"og:image\"]")?.attr("content")
-            ?: doc.selectFirst("img.main-poster")?.let { it.attr("abs:data-src").ifBlank { it.attr("data-src").ifBlank { it.attr("abs:src").ifBlank { it.attr("src") } } } }
-        
-        val bannerStyle = doc.selectFirst("#item-headline")?.attr("style") ?: ""
-        val banner = Regex("""url\(['"]?(.*?)['"]?\)""").find(bannerStyle)?.groupValues?.getOrNull(1)?.let { doc.absUrl(it) }
-
-        var year: String? = null
-        var rating: Double? = null
-
-        doc.select(".flm-meta-item").forEach { item ->
-            val icon = item.selectFirst(".flm-meta-icon")?.text() ?: ""
-            val value = item.selectFirst(".flm-meta-value")?.text() ?: ""
-            if (icon.contains("📅")) year = value.trim()
-            if (icon.contains("⭐")) rating = value.trim().toDoubleOrNull()
-        }
-
-        val genres = doc.select(".flm-genre-tags a.flm-genre-tag, .flm-genre-tags a[itemprop=\"genre\"]").map {
-            Genre(
-                id = parsePathId(it.attr("href")),
-                name = it.text().trim()
-            )
-        }
-
-        val seasons = doc.select("#episode-list > li").mapIndexedNotNull { seasonIndex, seasonLi ->
-            val seasonSpan = seasonLi.selectFirst("span") ?: return@mapIndexedNotNull null
-            val seasonName = seasonSpan.text().trim()
-            val seasonNumber = Regex("""\d+""").find(seasonName)?.value?.toIntOrNull() ?: (seasonIndex + 1)
+    override suspend fun getTvShow(id: String): TvShow {
+        val url = if (id.startsWith("http")) id else "$baseUrl/$id"
+        return getDocument(url).let { doc ->
+            val title = doc.selectFirst("h1[itemprop=\"name\"]")?.text()?.replace(doc.selectFirst("h1 .flm-online-badge")?.text() ?: "", "")?.trim() ?: ""
+            val overview = doc.selectFirst("#item-content p.description, p.description")?.text()?.trim()
+            val poster = doc.selectFirst("meta[property=\"og:image\"]")?.attr("content")
+                ?: doc.selectFirst("img.main-poster")?.let { it.attr("abs:data-src").ifBlank { it.attr("data-src").ifBlank { it.attr("abs:src").ifBlank { it.attr("src") } } } }
             
-            val episodes = seasonLi.select("ul > li").mapNotNull { episodeLi ->
-                val anchor = episodeLi.selectFirst("a") ?: return@mapNotNull null
-                val epHref = anchor.attr("href")
-                val epText = anchor.text().trim()
-                val epNumber = Regex("""e(\d+)""").find(epText.lowercase())?.groupValues?.getOrNull(1)?.toIntOrNull()
-                    ?: Regex("""\d+""").find(epText)?.value?.toIntOrNull()
-                    ?: 0
-                val epTitle = epText.replace(Regex("""^\[.*?\]\s*"""), "").trim()
+            val bannerStyle = doc.selectFirst("#item-headline")?.attr("style") ?: ""
+            val banner = Regex("""url\(['"]?(.*?)['"]?\)""").find(bannerStyle)?.groupValues?.getOrNull(1)?.let { doc.absUrl(it) }
+
+            var year: String? = null
+            var rating: Double? = null
+
+            doc.select(".flm-meta-item").forEach { item ->
+                val icon = item.selectFirst(".flm-meta-icon")?.text() ?: ""
+                val value = item.selectFirst(".flm-meta-value")?.text() ?: ""
+                if (icon.contains("📅")) year = value.trim()
+                if (icon.contains("⭐")) rating = value.trim().toDoubleOrNull()
+            }
+
+            val genres = doc.select(".flm-genre-tags a.flm-genre-tag, .flm-genre-tags a[itemprop=\"genre\"]").map {
+                Genre(
+                    id = parsePathId(it.attr("href")),
+                    name = it.text().trim()
+                )
+            }
+
+            val seasons = doc.select("#episode-list > li").mapIndexedNotNull { seasonIndex, seasonLi ->
+                val seasonSpan = seasonLi.selectFirst("span") ?: return@mapIndexedNotNull null
+                val seasonName = seasonSpan.text().trim()
+                val seasonNumber = Regex("""\d+""").find(seasonName)?.value?.toIntOrNull() ?: (seasonIndex + 1)
                 
-                Episode(
-                    id = parsePathId(epHref),
-                    number = epNumber,
-                    title = epTitle,
-                    poster = poster
+                val episodes = seasonLi.select("ul > li").mapNotNull { episodeLi ->
+                    val anchor = episodeLi.selectFirst("a") ?: return@mapNotNull null
+                    val epHref = anchor.attr("href")
+                    val epText = anchor.text().trim()
+                    val epNumber = Regex("""e(\d+)""").find(epText.lowercase())?.groupValues?.getOrNull(1)?.toIntOrNull()
+                        ?: Regex("""\d+""").find(epText)?.value?.toIntOrNull()
+                        ?: 0
+                    val epTitle = epText.replace(Regex("""^\[.*?\]\s*"""), "").trim()
+                    
+                    Episode(
+                        id = parsePathId(epHref),
+                        number = epNumber,
+                        title = epTitle,
+                        poster = poster
+                    )
+                }.sortedBy { it.number }
+
+                Season(
+                    id = "$id|season|$seasonNumber",
+                    number = seasonNumber,
+                    title = seasonName,
+                    poster = poster,
+                    episodes = episodes
                 )
             }.sortedBy { it.number }
 
-            Season(
-                id = "$id|season|$seasonNumber",
-                number = seasonNumber,
-                title = seasonName,
+            return@let TvShow(
+                id = id,
+                title = title,
+                overview = overview,
+                released = year,
+                rating = rating,
                 poster = poster,
-                episodes = episodes
+                banner = banner,
+                genres = genres,
+                seasons = seasons
             )
-        }.sortedBy { it.number }
-
-        return TvShow(
-            id = id,
-            title = title,
-            overview = overview,
-            released = year,
-            rating = rating,
-            poster = poster,
-            banner = banner,
-            genres = genres,
-            seasons = seasons
-        )
+        }
     }
 
     override suspend fun getEpisodesBySeason(seasonId: String): List<Episode> {
@@ -322,7 +312,8 @@ object FilmanCcProvider : Provider {
     }
 
     override suspend fun getServers(id: String, videoType: Video.Type): List<Video.Server> {
-        val doc = getDocument("$baseUrl/$id")
+        val url = if (id.startsWith("http")) id else "$baseUrl/$id"
+        val doc = getDocument(url)
         
         val html = doc.outerHtml()
         val routeTokenRegex = """var routeToken\s*=\s*'([^']*)'""".toRegex()
@@ -358,7 +349,7 @@ object FilmanCcProvider : Provider {
             servers.add(Video.Server(
                 id = linkId,
                 name = displayName,
-                src = "$linkId|$routeToken|$baseUrl/$id"
+                src = "$linkId|$routeToken|$url"
             ))
         }
 
@@ -455,8 +446,12 @@ object FilmanCcProvider : Provider {
     }
 
     private fun parsePathId(url: String): String {
-        return url.removePrefix(baseUrl).removePrefix("/")
-            .removeSuffix("/")
+        return url
+            .replace("https://filman.cc", "")
+            .replace("http://filman.cc", "")
+            .replace("https://www.filman.cc", "")
+            .replace("http://www.filman.cc", "")
+            .removePrefix("/").removeSuffix("/")
     }
 
     private fun parseItems(document: org.jsoup.nodes.Element): List<AppAdapter.Item> {

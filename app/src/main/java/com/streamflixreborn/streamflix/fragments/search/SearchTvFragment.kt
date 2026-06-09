@@ -206,7 +206,7 @@ class SearchTvFragment : Fragment() {
             setOnClickListener {
                 requestFocus()
                 val imm = requireContext().getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-                imm.showSoftInput(this, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                imm.showSoftInput(this, 0)
             }
             setOnEditorActionListener { _, actionId, event ->
                 val isSubmitAction =
@@ -229,12 +229,20 @@ class SearchTvFragment : Fragment() {
                     return@setOnKeyListener false
                 }
 
+                if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                    if (binding.etSearch.text.isNullOrBlank()) {
+                        binding.etSearch.performClick()
+                        return@setOnKeyListener true
+                    } else {
+                        return@setOnKeyListener submitSearch()
+                    }
+                }
+
                 if (keyCode == KeyEvent.KEYCODE_BACK) {
                     return@setOnKeyListener focusSearchContent()
                 }
 
                 if (
-                    keyCode == KeyEvent.KEYCODE_ENTER ||
                     keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
                     keyCode == KeyEvent.KEYCODE_SEARCH
                 ) {
