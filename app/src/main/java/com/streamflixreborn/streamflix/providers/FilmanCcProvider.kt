@@ -63,8 +63,10 @@ object FilmanCcProvider : Provider {
                 val responseUrl = response.request.url.toString()
                 val html = response.body?.string() ?: ""
                 
-                if (responseUrl.contains("/logowanie") || html.contains("Zaloguj się") || html.contains("login-form")) {
-                    Log.d(TAG, "[Provider] Login required detected for $url")
+                // Only trigger login when the server actually redirected us to /logowanie
+                // (not just because the page has a "Zaloguj się" nav link)
+                if (responseUrl.contains("/logowanie")) {
+                    Log.d(TAG, "[Provider] Login redirect detected for $url")
                     triggerManualLogin(url, depth)
                 } else if (!html.contains("cf-browser-verification") && !html.contains("Checking your browser") && !html.contains("Just a moment...")) {
                     Jsoup.parse(html).apply { setBaseUri(baseUrl) }
@@ -90,7 +92,7 @@ object FilmanCcProvider : Provider {
             Log.e(TAG, "[Provider] WebView Bypass TIMEOUT for $url")
         }
         
-        if (html.contains("filman.cc/logowanie") || html.contains("Zaloguj się")) {
+        if (html.contains("filman.cc/logowanie")) {
              return triggerManualLogin(url, depth)
         }
         
