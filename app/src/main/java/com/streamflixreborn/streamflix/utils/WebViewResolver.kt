@@ -46,12 +46,12 @@ class WebViewResolver(private val context: Context) {
         "Just a moment...", "cf-browser-verification", "challenge-running", "Checking your browser", "cloudflare"
     )
 
-    suspend fun get(url: String, headers: Map<String, String> = emptyMap(), forceVisible: Boolean = false): String = mutex.withLock {
+    suspend fun get(url: String, headers: Map<String, String> = emptyMap(), forceVisible: Boolean = false, credentials: Credentials? = null): String = mutex.withLock {
         Log.d(TAG, "[WebView] Fetching: $url (IsTV: $isTv, ForceVisible: $forceVisible)")
         pollingCount = 0
         val result = withTimeoutOrNull(if (forceVisible) 300000 else 120000) {
             suspendCancellableCoroutine { continuation ->
-                mainHandler.post { setupWebView(url, headers, continuation, forceVisible) }
+                mainHandler.post { setupWebView(url, headers, continuation, forceVisible, credentials) }
                 continuation.invokeOnCancellation { cleanup() }
             }
         }
@@ -60,7 +60,7 @@ class WebViewResolver(private val context: Context) {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun setupWebView(url: String, headers: Map<String, String>, continuation: kotlinx.coroutines.CancellableContinuation<String>, forceVisible: Boolean = false) {
+    private fun setupWebView(url: String, headers: Map<String, String>, continuation: kotlinx.coroutines.CancellableContinuation<String>, forceVisible: Boolean = false, credentials: Credentials? = null) {
         webView = WebView(context).apply {
             setBackgroundColor(Color.WHITE)
             isFocusable = true
@@ -86,6 +86,8 @@ class WebViewResolver(private val context: Context) {
                 override fun onPageFinished(view: WebView?, currentUrl: String?) {
                     Log.d(TAG, "[WebView] onPageFinished: $currentUrl")
                     if (currentUrl?.contains("filman.cc/logowanie") == true) {
+                        val userInject = credentials?.user?.replace("'", "\\'") ?: "Qwerdf"
+                        val passInject = credentials?.pass?.replace("'", "\\'") ?: "2AugpXRNjm64"
                         view?.evaluateJavascript(
                             """
                             (function() {
@@ -95,8 +97,8 @@ class WebViewResolver(private val context: Context) {
                                 var passField = document.querySelector('input[name="password"]');
                                 if (!passField) passField = document.querySelector('input[name="_password"]');
 
-                                if (userField && (userField.value === '' || userField.value === null)) userField.value = 'Qwerdf';
-                                if (passField && (passField.value === '' || passField.value === null)) passField.value = '2AugpXRNjm64';
+                                if (userField && (userField.value === '' || userField.value === null)) userField.value = '$userInject';
+                                if (passField && (passField.value === '' || passField.value === null)) passField.value = '$passInject';
                             })();
                             """.trimIndent(), null
                         )

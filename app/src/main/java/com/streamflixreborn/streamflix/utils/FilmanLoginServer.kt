@@ -23,6 +23,8 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 import kotlin.coroutines.resume
 
+data class Credentials(val user: String, val pass: String)
+
 class FilmanLoginServer {
 
     companion object {
@@ -33,15 +35,15 @@ class FilmanLoginServer {
 
     private var server: LoginHttpServer? = null
     private var dialog: AlertDialog? = null
-    private var activeContinuation: kotlinx.coroutines.CancellableContinuation<Boolean>? = null
+    private var activeContinuation: kotlinx.coroutines.CancellableContinuation<Credentials?>? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
      * Starts the local login server, shows a QR code dialog on the TV,
      * and suspends until the user logs in from their phone.
-     * Returns true if login was successful.
+     * Returns credentials if the user submitted them, or null if cancelled.
      */
-    suspend fun requestLogin(): Boolean {
+    suspend fun requestLogin(): Credentials? {
         // Clean up any previous state
         dismissDialog()
         stopServer()
@@ -53,21 +55,21 @@ class FilmanLoginServer {
             if (localIp == null) {
                 Log.e(TAG, "Could not determine local IP address")
                 activeContinuation = null
-                if (continuation.isActive) continuation.resume(false)
+                if (continuation.isActive) continuation.resume(null)
                 return@suspendCancellableCoroutine
             }
 
             val loginUrl = "http://$localIp:$PORT"
             Log.d(TAG, "Starting login server at $loginUrl")
 
-            server = LoginHttpServer(PORT) { success ->
-                Log.d(TAG, "Login completed: success=$success")
+            server = LoginHttpServer(PORT) { credentials ->
+                Log.d(TAG, "Login credentials received: user=${credentials?.user}")
                 mainHandler.post {
                     dismissDialog()
                     stopServer()
                 }
                 activeContinuation = null
-                if (continuation.isActive) continuation.resume(success)
+                if (continuation.isActive) continuation.resume(credentials)
             }
 
             try {
@@ -75,7 +77,7 @@ class FilmanLoginServer {
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start login server", e)
                 activeContinuation = null
-                if (continuation.isActive) continuation.resume(false)
+                if (continuation.isActive) continuation.resume(null)
                 return@suspendCancellableCoroutine
             }
 
@@ -164,7 +166,7 @@ class FilmanLoginServer {
                 stopServer()
                 val cont = activeContinuation
                 activeContinuation = null
-                if (cont != null && cont.isActive) cont.resume(false)
+                if (cont != null && cont.isActive) cont.resume(null)
             }
             .create()
 
@@ -222,23 +224,23 @@ class FilmanLoginServer {
     }
 
     /**
-     * NanoHTTPD server that serves a login form and proxies credentials to filman.cc.
+     * NanoHTTPD server that serves a login form and passes credentials back.
      */
     private class LoginHttpServer(
         port: Int,
-        private val onLoginResult: (Boolean) -> Unit
+        private val onCredentialsResult: (Credentials?) -> Unit
     ) : NanoHTTPD(port) {
 
         override fun serve(session: IHTTPSession): Response {
             return when {
-                session.method == Method.GET && session.uri == "/" -> serveLoginPage()
+                session.method == Method.GET && session.uri == "/" -> serveLoginPage(session)
                 session.method == Method.POST && session.uri == "/login" -> handleLogin(session)
                 session.method == Method.GET && session.uri == "/success" -> serveSuccessPage()
                 else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Not found")
             }
         }
 
-        private fun serveLoginPage(): Response {
+        private fun serveLoginPage(session: IHTTPSession): Response {
             val html = """
 <!DOCTYPE html>
 <html lang="pl">
@@ -321,29 +323,14 @@ class FilmanLoginServer {
             font-size: 14px;
             display: none;
         }
-        .spinner {
-            display: none;
-            text-align: center;
-            padding: 20px;
-        }
-        .spinner::after {
-            content: '';
-            width: 32px; height: 32px;
-            border: 3px solid rgba(255,255,255,0.2);
-            border-top-color: #64FFDA;
-            border-radius: 50%;
-            display: inline-block;
-            animation: spin 0.8s linear infinite;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
     <div class="card">
         <h1>🎬 Filman.cc</h1>
         <p class="subtitle">Zaloguj się, aby odblokować treści w Streamflix</p>
-        <div id="error" class="error"></div>
-        <form id="loginForm">
+        ${if (session.parms["error"] == "empty") "<div class=\"error\" style=\"display:block\">Podaj login i hasło</div>" else ""}
+        <form id="loginForm" method="POST" action="/login">
             <div class="form-group">
                 <label for="login">Login</label>
                 <input type="text" id="login" name="login" autocomplete="username" required autofocus>
@@ -352,46 +339,9 @@ class FilmanLoginServer {
                 <label for="password">Hasło</label>
                 <input type="password" id="password" name="password" autocomplete="current-password" required>
             </div>
-            <button type="submit">Zaloguj się</button>
+            <button type="submit">Przekaż do TV</button>
         </form>
-        <div id="spinner" class="spinner"></div>
     </div>
-    <script>
-        document.getElementById('loginForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const form = e.target;
-            const error = document.getElementById('error');
-            const spinner = document.getElementById('spinner');
-            error.style.display = 'none';
-            form.style.display = 'none';
-            spinner.style.display = 'block';
-            
-            try {
-                const resp = await fetch('/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: new URLSearchParams({
-                        login: document.getElementById('login').value,
-                        password: document.getElementById('password').value
-                    })
-                });
-                const data = await resp.json();
-                if (data.success) {
-                    window.location.href = '/success';
-                } else {
-                    error.textContent = data.message || 'Błąd logowania';
-                    error.style.display = 'block';
-                    form.style.display = 'block';
-                    spinner.style.display = 'none';
-                }
-            } catch (err) {
-                error.textContent = 'Błąd połączenia';
-                error.style.display = 'block';
-                form.style.display = 'block';
-                spinner.style.display = 'none';
-            }
-        });
-    </script>
 </body>
 </html>
             """.trimIndent()
@@ -405,78 +355,22 @@ class FilmanLoginServer {
             } catch (_: Exception) {}
 
             val postData = session.parms
-            val login = postData["login"] ?: ""
-            val password = postData["password"] ?: ""
+            val login = postData["login"] ?: postData["_username"] ?: ""
+            val password = postData["password"] ?: postData["_password"] ?: ""
 
             if (login.isBlank() || password.isBlank()) {
-                return jsonResponse(false, "Podaj login i hasło")
+                return redirectResponse("/?error=empty")
             }
 
-            return try {
-                // First, GET the login page to capture any CSRF token and initial cookies
-                val client = NetworkClient.default
+            // We got the credentials! Send them back to the TV.
+            onCredentialsResult(Credentials(login, password))
+            return redirectResponse("/success")
+        }
 
-                val getLoginRequest = Request.Builder()
-                    .url("$FILMAN_BASE/logowanie")
-                    .header("User-Agent", NetworkClient.USER_AGENT)
-                    .header("Referer", FILMAN_BASE)
-                    .build()
-
-                val getResponse = client.newCall(getLoginRequest).execute()
-                val loginPageHtml = getResponse.body?.string() ?: ""
-
-                // Extract CSRF token if present
-                val csrfToken = Regex("""name="_token"\s+value="([^"]+)"""").find(loginPageHtml)
-                    ?.groupValues?.getOrNull(1)
-                    ?: Regex("""name="csrf_token"\s+value="([^"]+)"""").find(loginPageHtml)
-                        ?.groupValues?.getOrNull(1)
-
-                // Build the login POST request
-                val formBuilder = FormBody.Builder()
-                    .add("login", login)
-                    .add("password", password)
-
-                if (!csrfToken.isNullOrBlank()) {
-                    formBuilder.add("_token", csrfToken)
-                }
-
-                val postRequest = Request.Builder()
-                    .url("$FILMAN_BASE/logowanie")
-                    .header("User-Agent", NetworkClient.USER_AGENT)
-                    .header("Referer", "$FILMAN_BASE/logowanie")
-                    .header("Origin", FILMAN_BASE)
-                    .header("Content-Type", "application/x-www-form-urlencoded")
-                    .post(formBuilder.build())
-                    .build()
-
-                val postResponse = client.newCall(postRequest).execute()
-                val responseHtml = postResponse.body?.string() ?: ""
-                val responseUrl = postResponse.request.url.toString()
-
-                // Check if login was successful:
-                // - Redirected away from login page
-                // - Or page no longer contains the login form
-                val isStillOnLogin = responseUrl.contains("/logowanie") ||
-                        responseHtml.contains("Nieprawidłowy login") ||
-                        responseHtml.contains("Nieprawidłowe hasło") ||
-                        responseHtml.contains("Błędne dane")
-
-                if (isStillOnLogin && responseHtml.contains("login-form", ignoreCase = true)) {
-                    jsonResponse(false, "Nieprawidłowy login lub hasło")
-                } else {
-                    // Cookies are automatically saved by NetworkClient.cookieJar
-                    // Also sync to WebView CookieManager
-                    val cookieManager = CookieManager.getInstance()
-                    val cookies = cookieManager.getCookie(FILMAN_BASE)
-                    Log.d(TAG, "Login successful. Cookies: $cookies")
-
-                    onLoginResult(true)
-                    jsonResponse(true, "Zalogowano pomyślnie!")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Login request failed", e)
-                jsonResponse(false, "Błąd połączenia z filman.cc: ${e.message}")
-            }
+        private fun redirectResponse(url: String): Response {
+            val res = newFixedLengthResponse(Response.Status.REDIRECT, NanoHTTPD.MIME_HTML, "")
+            res.addHeader("Location", url)
+            return res
         }
 
         private fun serveSuccessPage(): Response {
@@ -486,7 +380,7 @@ class FilmanLoginServer {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zalogowano!</title>
+    <title>Gotowe!</title>
     <style>
         * { margin: 0; padding: 0; }
         body {
@@ -516,18 +410,13 @@ class FilmanLoginServer {
 <body>
     <div class="card">
         <div class="check">✅</div>
-        <h1>Zalogowano!</h1>
-        <p>Możesz zamknąć tę stronę i wrócić do Streamflix na TV.</p>
+        <h1>Sukces!</h1>
+        <p>Dane przekazane do TV. Dokoncz logowanie na ekranie telewizora (ReCaptcha).</p>
     </div>
 </body>
 </html>
             """.trimIndent()
             return newFixedLengthResponse(Response.Status.OK, "text/html", html)
-        }
-
-        private fun jsonResponse(success: Boolean, message: String): Response {
-            val json = """{"success": $success, "message": "$message"}"""
-            return newFixedLengthResponse(Response.Status.OK, "application/json", json)
         }
     }
 }
