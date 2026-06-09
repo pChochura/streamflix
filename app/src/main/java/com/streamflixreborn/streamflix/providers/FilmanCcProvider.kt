@@ -228,8 +228,12 @@ object FilmanCcProvider : Provider {
 
     override suspend fun getMovie(id: String): Movie {
         if (id == "login") {
-            triggerManualLogin(baseUrl, 0)
-            throw Exception("Zalogowano pomyślnie. Odśwież stronę główną.")
+            val success = loginServer.requestLogin()
+            if (success) {
+                throw Exception("Zalogowano pomyślnie. Odśwież stronę główną.")
+            } else {
+                throw Exception("Logowanie anulowane.")
+            }
         }
         val url = if (id.startsWith("http")) id else "$baseUrl/$id"
         return getDocument(url).let { doc ->

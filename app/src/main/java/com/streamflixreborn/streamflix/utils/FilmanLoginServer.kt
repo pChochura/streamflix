@@ -33,6 +33,7 @@ class FilmanLoginServer {
 
     private var server: LoginHttpServer? = null
     private var dialog: AlertDialog? = null
+    private var activeContinuation: kotlinx.coroutines.CancellableContinuation<Boolean>? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
@@ -41,10 +42,17 @@ class FilmanLoginServer {
      * Returns true if login was successful.
      */
     suspend fun requestLogin(): Boolean {
+        // Clean up any previous state
+        dismissDialog()
+        stopServer()
+
         return suspendCancellableCoroutine { continuation ->
+            activeContinuation = continuation
+
             val localIp = getLocalIpAddress()
             if (localIp == null) {
                 Log.e(TAG, "Could not determine local IP address")
+                activeContinuation = null
                 if (continuation.isActive) continuation.resume(false)
                 return@suspendCancellableCoroutine
             }
@@ -58,6 +66,7 @@ class FilmanLoginServer {
                     dismissDialog()
                     stopServer()
                 }
+                activeContinuation = null
                 if (continuation.isActive) continuation.resume(success)
             }
 
@@ -65,6 +74,7 @@ class FilmanLoginServer {
                 server?.start()
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start login server", e)
+                activeContinuation = null
                 if (continuation.isActive) continuation.resume(false)
                 return@suspendCancellableCoroutine
             }
@@ -75,6 +85,7 @@ class FilmanLoginServer {
 
             continuation.invokeOnCancellation {
                 mainHandler.post {
+                    activeContinuation = null
                     dismissDialog()
                     stopServer()
                 }
@@ -149,7 +160,11 @@ class FilmanLoginServer {
             .setView(container)
             .setCancelable(true)
             .setOnCancelListener {
+                Log.d(TAG, "QR dialog cancelled by user")
                 stopServer()
+                val cont = activeContinuation
+                activeContinuation = null
+                if (cont != null && cont.isActive) cont.resume(false)
             }
             .create()
 
