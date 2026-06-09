@@ -1,6 +1,5 @@
 package com.streamflixreborn.streamflix.providers
 
-import android.content.Context
 import android.util.Log
 import com.streamflixreborn.streamflix.StreamFlixApp
 import com.streamflixreborn.streamflix.adapters.AppAdapter
@@ -15,6 +14,7 @@ import com.streamflixreborn.streamflix.models.Show
 import com.streamflixreborn.streamflix.models.TvShow
 import com.streamflixreborn.streamflix.models.Video
 import com.streamflixreborn.streamflix.utils.NetworkClient
+import com.streamflixreborn.streamflix.utils.FilmanLoginServer
 import com.streamflixreborn.streamflix.utils.WebViewResolver
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -33,6 +33,7 @@ object FilmanCcProvider : Provider {
     override val language = "pl"
 
     private var webViewResolver: WebViewResolver? = null
+    private val loginServer = FilmanLoginServer()
     private val providerMutex = Mutex()
     private const val TAG = "FilmanCc"
 
@@ -40,10 +41,6 @@ object FilmanCcProvider : Provider {
         return webViewResolver ?: WebViewResolver(StreamFlixApp.instance).also {
             webViewResolver = it
         }
-    }
-
-    fun init(context: Context) {
-        webViewResolver = WebViewResolver(context)
     }
 
     private suspend fun getDocument(url: String, depth: Int = 0): Document {
@@ -101,11 +98,9 @@ object FilmanCcProvider : Provider {
     }
 
     private suspend fun triggerManualLogin(originalUrl: String, depth: Int): Document {
-        Log.d(TAG, "[Provider] Launching MANUAL LOGIN via WebView")
-        val loginUrl = "$baseUrl/logowanie"
-        getResolver().get(loginUrl, forceVisible = true)
-        
-        Log.d(TAG, "[Provider] Manual login finished, retrying $originalUrl")
+        Log.d(TAG, "[Provider] Launching QR Code Login Server")
+        val success = loginServer.requestLogin()
+        Log.d(TAG, "[Provider] Login server result: success=$success, retrying $originalUrl")
         return getDocument(originalUrl, depth + 1)
     }
 
