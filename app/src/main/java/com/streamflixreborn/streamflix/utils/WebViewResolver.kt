@@ -229,9 +229,9 @@ class WebViewResolver(private val context: Context) {
                 }.apply {
                     layoutParams = ViewGroup.LayoutParams(-1, -1)
                     setBackgroundColor(Color.BLACK)
-                    isFocusable = isTv
-                    isFocusableInTouchMode = isTv
-                    descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+                    isFocusable = true
+                    isFocusableInTouchMode = true
+                    descendantFocusability = if (isTv) ViewGroup.FOCUS_AFTER_DESCENDANTS else ViewGroup.FOCUS_BEFORE_DESCENDANTS
                 }
 
                 if (isTv) {
@@ -284,7 +284,10 @@ class WebViewResolver(private val context: Context) {
                     }
                     .create()
                 
-                dialog?.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN)
+                dialog?.window?.setSoftInputMode(
+                    android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
+                    android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
+                )
                 dialog?.show()
 
                 if (isTv) {
@@ -295,7 +298,10 @@ class WebViewResolver(private val context: Context) {
                         rootContainer.requestFocus()
                     }
                 } else {
+                    webView?.isFocusable = true
+                    webView?.isFocusableInTouchMode = true
                     webView?.requestFocus()
+                    webView?.requestFocusFromTouch()
                 }
                 Log.d(TAG, "[WebView] Challenge Dialog DISPLAYED (isTv: $isTv)")
             } catch (e: Exception) { Log.e(TAG, "[WebView] CRITICAL UI ERROR", e) }
