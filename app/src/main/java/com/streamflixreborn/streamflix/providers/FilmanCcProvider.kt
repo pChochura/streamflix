@@ -112,25 +112,97 @@ object FilmanCcProvider : Provider {
     override suspend fun getHome(): List<Category> = providerMutex.withLock {
         val doc = getDocument(baseUrl)
         val categories = mutableListOf<Category>()
+        val processedContainers = mutableSetOf<org.jsoup.nodes.Element>()
 
-        val moviesHeader = doc.select("h3").find { it.text().contains("FILMY NA CZASIE", ignoreCase = true) }
-        val moviesContainer = moviesHeader?.parent()?.selectFirst("#item-list, .item-list")
-            ?: doc.selectFirst("#item-list, .item-list")
-        
-        val movies = moviesContainer?.let { parseItems(it).filterIsInstance<Movie>() }.orEmpty()
-        if (movies.isNotEmpty()) {
-            categories.add(Category("Filmy na czasie", movies))
+        // Check if user is logged out to offer early login
+        if (doc.selectFirst("a[href*=/logowanie], a:contains(Zaloguj)") != null) {
+            categories.add(
+                Category(
+                    name = "Konto",
+                    list = listOf(
+                        Movie(
+                            id = "login",
+                            title = "Zaloguj się (Opcjonalnie)",
+                            poster = logo
+                        )
+                    )
+                )
+            )
         }
 
-        val tvHeader = doc.select("h3").find { it.text().contains("SERIALE NA CZASIE", ignoreCase = true) }
-        val tvContainer = tvHeader?.parent()?.select("div.row, div.item-list")?.find { it.select(".movie-item").isNotEmpty() }
-        
-        val tvShows = tvContainer?.let { parseItems(it).filterIsInstance<TvShow>() }.orEmpty()
-        if (tvShows.isNotEmpty()) {
-            categories.add(Category("Seriale na czasie", tvShows))
+        // 1. Featured Section
+        val featuredContainer = doc.selectFirst("#featured, .featured, #slider, .slider, .owl-carousel, #home-slider")
+        if (featuredContainer != null) {
+            val featuredItems = parseItems(featuredContainer)
+            if (featuredItems.isNotEmpty()) {
+                categories.add(Category("Polecane", featuredItems))
+                processedContainers.add(featuredContainer)
+            }
+        }
+
+        // 2. Generic Header to List extraction
+        val headers = doc.select("h1, h2, h3, h4, .title, .block-title")
+        for (header in headers) {
+            val title = header.text().trim()
+            if (title.isBlank() || title.length > 50) continue
+
+            var next = header.nextElementSibling()
+            if (next == null) next = header.parent()?.nextElementSibling()
+
+            var container: org.jsoup.nodes.Element? = null
+            var count = 0
+            while (next != null && count < 5) {
+                if (next.id() == "item-list" || next.hasClass("item-list") || next.hasClass("row") || next.select(".movie-item, .film-item, .col-xs-6, .poster").isNotEmpty()) {
+                    container = next
+                    break
+                }
+                next = next.nextElementSibling()
+                count++
+            }
+
+            if (container != null && !processedContainers.contains(container)) {
+                val items = parseItems(container)
+                if (items.isNotEmpty() && categories.none { it.name.equals(title, ignoreCase = true) }) {
+                    categories.add(Category(title, items))
+                    processedContainers.add(container)
+                }
+            }
+        }
+
+        // 3. Fallback if the generic logic didn't find specific categories
+        if (categories.isEmpty() || categories.size == 1) {
+            val moviesContainer = doc.select("#item-list, .item-list").firstOrNull()
+            if (moviesContainer != null && !processedContainers.contains(moviesContainer)) {
+                val movies = parseItems(moviesContainer).filterIsInstance<Movie>()
+                if (movies.isNotEmpty() && categories.none { it.name.contains("Filmy", ignoreCase = true) }) {
+                    categories.add(Category("Filmy na czasie", movies))
+                    processedContainers.add(moviesContainer)
+                }
+            }
+
+            val tvHeader = doc.select("h3").find { it.text().contains("SERIALE NA CZASIE", ignoreCase = true) }
+            val tvContainer = tvHeader?.parent()?.select("div.row, div.item-list")?.find { it.select(".movie-item").isNotEmpty() }
+                ?: doc.select("#item-list, .item-list").getOrNull(1)
+            
+            if (tvContainer != null && !processedContainers.contains(tvContainer)) {
+                val tvShows = parseItems(tvContainer).filterIsInstance<TvShow>()
+                if (tvShows.isNotEmpty() && categories.none { it.name.contains("Seriale", ignoreCase = true) }) {
+                    categories.add(Category("Seriale na czasie", tvShows))
+                    processedContainers.add(tvContainer)
+                }
+            }
         }
 
         return@withLock categories
+    }
+
+    private fun getMainContainer(doc: Document): org.jsoup.nodes.Element {
+        val lists = doc.select("#item-list, .item-list, #results, .content-box")
+        return if (lists.size > 1) {
+            lists.maxByOrNull { it.select(".movie-item, .film-item, .col-xs-6, .poster").size } ?: doc
+        } else {
+            lists.firstOrNull() ?: doc
+        }
     }
 
     override suspend fun search(query: String, page: Int): List<AppAdapter.Item> {
@@ -142,22 +214,26 @@ object FilmanCcProvider : Provider {
         }
         val url = "$baseUrl/search?phrase=${URLEncoder.encode(query, "UTF-8")}&page=$page"
         val doc = getDocument(url)
-        return parseItems(doc)
+        return parseItems(getMainContainer(doc))
     }
 
     override suspend fun getMovies(page: Int): List<Movie> {
         val url = if (page == 1) "$baseUrl/filmy" else "$baseUrl/filmy?page=$page"
         val doc = getDocument(url)
-        return parseItems(doc).filterIsInstance<Movie>()
+        return parseItems(getMainContainer(doc)).filterIsInstance<Movie>()
     }
 
     override suspend fun getTvShows(page: Int): List<TvShow> {
         val url = if (page == 1) "$baseUrl/seriale" else "$baseUrl/seriale?page=$page"
         val doc = getDocument(url)
-        return parseItems(doc).filterIsInstance<TvShow>()
+        return parseItems(getMainContainer(doc)).filterIsInstance<TvShow>()
     }
 
     override suspend fun getMovie(id: String): Movie {
+        if (id == "login") {
+            triggerManualLogin(baseUrl, 0)
+            throw Exception("Zalogowano pomyślnie. Odśwież stronę główną.")
+        }
         val url = if (id.startsWith("http")) id else "$baseUrl/$id"
         return getDocument(url).let { doc ->
             val title = doc.selectFirst("h1[itemprop=\"name\"]")?.text()?.replace(doc.selectFirst("h1 .flm-online-badge")?.text() ?: "", "")?.trim() ?: ""
@@ -291,7 +367,7 @@ object FilmanCcProvider : Provider {
         val url = if (page == 1) "$baseUrl/$id" else "$baseUrl/$id?page=$page"
         val doc = getDocument(url)
         val name = doc.selectFirst("h1, h2")?.text()?.trim() ?: id.substringAfterLast("/")
-        val shows = parseItems(doc).filterIsInstance<Show>()
+        val shows = parseItems(getMainContainer(doc)).filterIsInstance<Show>()
         return Genre(
             id = id,
             name = name,
@@ -303,7 +379,7 @@ object FilmanCcProvider : Provider {
         val url = if (page == 1) "$baseUrl/$id" else "$baseUrl/$id?page=$page"
         val doc = getDocument(url)
         val name = doc.selectFirst("h1, h2")?.text()?.trim() ?: id.substringAfterLast("/")
-        val filmography = parseItems(doc).filterIsInstance<Show>()
+        val filmography = parseItems(getMainContainer(doc)).filterIsInstance<Show>()
         return People(
             id = id,
             name = name,
