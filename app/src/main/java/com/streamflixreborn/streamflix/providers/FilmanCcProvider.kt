@@ -604,9 +604,13 @@ object FilmanCcProvider : Provider {
             val posterUrl = posterImg?.let { 
                 it.attr("abs:data-src").ifBlank { 
                     it.attr("data-src").ifBlank { 
-                        it.attr("abs:src").ifBlank { 
-                            it.attr("src") 
-                        } 
+                        it.attr("abs:srcset").ifBlank {
+                            it.attr("srcset").ifBlank {
+                                it.attr("abs:src").ifBlank { 
+                                    it.attr("src") 
+                                }
+                            }
+                        }
                     } 
                 } 
             } ?: ""
