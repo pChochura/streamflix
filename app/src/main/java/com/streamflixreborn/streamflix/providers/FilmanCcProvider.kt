@@ -22,7 +22,8 @@ import okhttp3.Request
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.net.URLEncoder
-import java.util.Base64
+import android.util.Base64
+import java.net.URL
 import java.util.concurrent.TimeUnit
 
 object FilmanCcProvider : Provider {
@@ -498,7 +499,7 @@ object FilmanCcProvider : Provider {
                 val jsonObj = org.json.JSONObject(jsonStr)
                 if (jsonObj.optBoolean("ok")) {
                     val encodedUrl = jsonObj.optString("url")
-                    val decodedUrl = String(Base64.getDecoder().decode(encodedUrl), Charsets.UTF_8)
+                    val decodedUrl = String(Base64.decode(encodedUrl, Base64.DEFAULT), Charsets.UTF_8)
                     if (decodedUrl.startsWith("http")) {
                         val finalUrl = if (decodedUrl.contains("tmp-url.pro")) {
                             resolveTmpUrl(decodedUrl) ?: decodedUrl
@@ -539,7 +540,7 @@ object FilmanCcProvider : Provider {
 
                 if (e.isNotEmpty() && a.isNotEmpty() && b.isNotEmpty() && c.isNotEmpty()) {
                     val key = a + b + c
-                    val raw = Base64.getDecoder().decode(e)
+                    val raw = Base64.decode(e, Base64.DEFAULT)
                     val out = StringBuilder()
                     for (i in raw.indices) {
                         val charCode = (raw[i].toInt() and 0xFF) xor key[i % key.length].code
@@ -558,12 +559,12 @@ object FilmanCcProvider : Provider {
     }
 
     private fun parsePathId(url: String): String {
-        return url
-            .replace("https://filman.cc", "")
-            .replace("http://filman.cc", "")
-            .replace("https://www.filman.cc", "")
-            .replace("http://www.filman.cc", "")
-            .removePrefix("/").removeSuffix("/")
+        val path = try {
+            URL(url).path
+        } catch (e: Exception) {
+            url
+        }
+        return path.removePrefix("/").removeSuffix("/")
     }
 
     private fun parseItems(document: org.jsoup.nodes.Element): List<AppAdapter.Item> {
@@ -581,15 +582,13 @@ object FilmanCcProvider : Provider {
             if (!seen.add(el)) return@mapNotNull null
             
             val anchor = el.selectFirst(".poster a, a:has(picture), a:has(img)") ?: el.selectFirst("a") ?: return@mapNotNull null
-            val href = anchor.attr("href")
+            val href = anchor.attr("abs:href").ifBlank { anchor.attr("href") }
             if (href.isBlank()) return@mapNotNull null
             
-            // filman.cc uses /m/{id} for movies and /s/{id} for TV shows
-            val isMovie = href.contains("/m/") || href.contains("/film/")
-            val isShow = href.contains("/s/") || href.contains("/serial/") || href.contains("/e/")
-            if (!isMovie && !isShow) return@mapNotNull null
-            
             val id = parsePathId(href)
+            val isMovie = id.startsWith("m/") || id.startsWith("film/")
+            val isShow = id.startsWith("s/") || id.startsWith("serial/") || id.startsWith("e/")
+            if (!isMovie && !isShow) return@mapNotNull null
             val title = el.selectFirst(".film_title, .title, h2, h3, h4")?.text()?.trim()
                 ?.takeIf { it.isNotBlank() }
                 ?: anchor.attr("title").trim().takeIf { it.isNotBlank() }
