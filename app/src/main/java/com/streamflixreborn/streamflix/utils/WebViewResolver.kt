@@ -286,9 +286,14 @@ class WebViewResolver(private val context: Context) {
                 
                 dialog?.window?.setSoftInputMode(
                     android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
-                    android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
+                    android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
                 )
                 dialog?.show()
+
+                // FLAG_FULLSCREEN (set by the fullscreen theme) blocks the soft keyboard.
+                // Clear it after show() so the keyboard can appear when inputs are tapped.
+                dialog?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
+                dialog?.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN)
 
                 if (isTv) {
                     rootContainer.post {
@@ -301,7 +306,6 @@ class WebViewResolver(private val context: Context) {
                     webView?.isFocusable = true
                     webView?.isFocusableInTouchMode = true
                     webView?.requestFocus()
-                    webView?.requestFocusFromTouch()
                 }
                 Log.d(TAG, "[WebView] Challenge Dialog DISPLAYED (isTv: $isTv)")
             } catch (e: Exception) { Log.e(TAG, "[WebView] CRITICAL UI ERROR", e) }
