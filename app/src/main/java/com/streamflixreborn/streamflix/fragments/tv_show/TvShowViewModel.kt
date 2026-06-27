@@ -53,6 +53,13 @@ class TvShowViewModel(
     }
 
     private val _state = MutableStateFlow<State>(State.Loading)
+
+    // Tracks the number of the season that has been explicitly requested via getSeason().
+    // Reset to -1 whenever a fresh TvShow load starts so that the initial auto-advance to
+    // season 1 can still fire — but it will NOT fire again once a season has been selected,
+    // which prevents the "switching seasons always resets to season 1" bug.
+    private var lastRequestedSeasonNumber: Int = -1
+
     @OptIn(ExperimentalCoroutinesApi::class)
     val state: Flow<State> = combine(
         _state.transformLatest { state ->
@@ -64,9 +71,16 @@ class TvShowViewModel(
                     }
 
                     if (episodes.isEmpty() && state.tvShow.seasons.isNotEmpty()) {
-                        val firstSeason = state.tvShow.seasons.firstOrNull { it.number != 0 }
-                            ?: state.tvShow.seasons.first()
-                        getSeason(TvShow(id, ""), firstSeason)
+                        // Only auto-advance to the first season on the very first load
+                        // (lastRequestedSeasonNumber == -1). If the user has already
+                        // navigated to a specific season, the episode DB will be empty
+                        // for a short window while those episodes are being inserted —
+                        // we must NOT reset back to season 1 in that case.
+                        if (lastRequestedSeasonNumber < 0) {
+                            val firstSeason = state.tvShow.seasons.firstOrNull { it.number != 0 }
+                                ?: state.tvShow.seasons.first()
+                            getSeason(TvShow(id, ""), firstSeason)
+                        }
                     } else {
                         val season = state.tvShow.seasons.let { seasons ->
                             seasons
@@ -96,7 +110,10 @@ class TvShowViewModel(
                         if (
                             episodeIndex == null &&
                             season != null &&
-                            (season.episodes.isEmpty() || state.tvShow.seasons.lastOrNull() == season)
+                            (season.episodes.isEmpty() || state.tvShow.seasons.lastOrNull() == season) &&
+                            // Only trigger a getSeason() call if no season has been
+                            // explicitly requested yet (first-load scenario).
+                            lastRequestedSeasonNumber < 0
                         ) {
                             getSeason(state.tvShow, season)
                         }
@@ -187,6 +204,7 @@ class TvShowViewModel(
     }
 
     private val _seasonState = MutableStateFlow<SeasonState>(SeasonState.Loading)
+    val seasonState: kotlinx.coroutines.flow.Flow<SeasonState> = _seasonState
 
     sealed class SeasonState {
         data object Loading :  SeasonState()
@@ -204,6 +222,8 @@ class TvShowViewModel(
 
 
     fun getTvShow(id: String) = viewModelScope.launch(Dispatchers.IO) {
+        // Reset the season tracker so a fresh load can auto-advance to season 1 again.
+        lastRequestedSeasonNumber = -1
         _state.emit(State.Loading)
 
         try {
@@ -238,6 +258,9 @@ class TvShowViewModel(
     }
 
     private fun getSeason(tvShow: TvShow, season: Season) = viewModelScope.launch(Dispatchers.IO) {
+        // Record which season is being loaded so the auto-advance logic in the state flow
+        // does not reset to season 1 while this season's episodes are being inserted into DB.
+        lastRequestedSeasonNumber = season.number
         _seasonState.emit(SeasonState.Loading)
 
         try {
